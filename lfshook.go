@@ -3,13 +3,14 @@ package lfshook
 
 import (
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 // We are logging to file, strip colors to make the output more readable.
@@ -35,6 +36,8 @@ type LfsHook struct {
 	defaultWriter    io.Writer
 	hasDefaultPath   bool
 	hasDefaultWriter bool
+
+	onCheckWritebuffer func(io.Writer, *logrus.Entry) (skipWrite bool)
 }
 
 // NewHook returns new LFS hook.
@@ -107,6 +110,28 @@ func (hook *LfsHook) SetDefaultWriter(defaultWriter io.Writer) {
 	hook.hasDefaultWriter = true
 }
 
+// 开始写writer时，进行回调
+func (hook *LfsHook) SetCheckWriteBuffer(prepareWritebuffer func(io.Writer, *logrus.Entry) (skipWrite bool)) {
+	hook.lock.Lock()
+	defer hook.lock.Unlock()
+	hook.onCheckWritebuffer = prepareWritebuffer
+}
+
+// SafePrepareWritebuffer 安全的调用一次
+func (hook *LfsHook) SafeCheckWriteBuffer(level logrus.Level) {
+	hook.lock.Lock()
+	defer hook.lock.Unlock()
+
+	writer, ok := hook.writers[level]
+	if !ok {
+		return
+	}
+
+	if hook.onCheckWritebuffer != nil {
+		hook.onCheckWritebuffer(writer, nil)
+	}
+}
+
 // Fire writes the log file to defined path or using the defined writer.
 // User who run this function needs write permissions to the file or directory if the file does not yet exist.
 func (hook *LfsHook) Fire(entry *logrus.Entry) error {
@@ -134,6 +159,13 @@ func (hook *LfsHook) ioWrite(entry *logrus.Entry) error {
 		if hook.hasDefaultWriter {
 			writer = hook.defaultWriter
 		} else {
+			return nil
+		}
+	}
+
+	if hook.onCheckWritebuffer != nil {
+		skip := hook.onCheckWritebuffer(writer, entry)
+		if skip {
 			return nil
 		}
 	}
